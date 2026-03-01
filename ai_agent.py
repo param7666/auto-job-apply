@@ -1,4 +1,13 @@
-import requests
+"""
+╔══════════════════════════════════════════════════════════╗
+║   🤖 AI PC AGENT — FINAL VERSION                        ║
+║   Developer: Parmeshwar Gurlewad                        ║
+║   Features: Naukri Auto Apply, LinkedIn Auto Apply,     ║
+║             Excel Export, Human Q&A, Tab Management     ║
+╚══════════════════════════════════════════════════════════╝
+"""
+
+import re
 import json
 import time
 import os
@@ -8,9 +17,9 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-# ─────────────────────────────────────────────
-# YOUR FULL PROFILE
-# ─────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════
+# YOUR PROFILE — edit these values
+# ══════════════════════════════════════════════════════════
 MY_PROFILE = {
     "name":             "Parmeshwar Gurlewad",
     "first_name":       "Parmeshwar",
@@ -31,19 +40,206 @@ MY_PROFILE = {
     "college":          "MGM College of Computer Science",
     "passing_year":     "2024",
     "percentage":       "75",
-    "summary": """Java Full Stack Developer, 1+ year experience at Pranakshit IT Solution, Hyderabad.
-Skills: Java, Spring Boot, Microservices, REST APIs, Hibernate, MySQL, PostgreSQL, React, Git, CI/CD.
-Education: B.Sc Computer Science, MGM College, 2024. Expected CTC: 4 LPA. Notice: Immediate joiner."""
 }
 
-OLLAMA_URL    = "http://localhost:11434/api/generate"
-MODEL         = "mistral"
 AGENT_PROFILE = os.path.expanduser("~") + r"\AI_Agent_Chrome_Profile"
 EXCEL_DIR     = os.path.expanduser("~") + r"\Desktop"
 
-# ─────────────────────────────────────────────
-# SAFE NAVIGATION
-# ─────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════
+# INTENT DETECTION — pure keyword matching, no AI needed
+# ══════════════════════════════════════════════════════════
+
+# IMPORTANT: longer phrases must come BEFORE shorter ones
+JOB_KEYWORDS = [
+    "java full stack developer", "java full stack",
+    "java developer", "spring boot developer",
+    "python developer", "react developer", "angular developer",
+    "full stack developer", "backend developer", "frontend developer",
+    "devops engineer", "data engineer", "data scientist",
+    "machine learning engineer", "ml engineer",
+    "nodejs developer", "software engineer", "software developer",
+    "dotnet developer", ".net developer", "php developer",
+    "node js", "full stack", "spring boot",
+    "java", "python", "react", "angular",
+    "backend", "frontend", "devops",
+]
+
+KNOWN_CITIES = [
+    "hyderabad", "bangalore", "bengaluru", "mumbai", "pune",
+    "chennai", "delhi", "gurgaon", "noida", "kolkata",
+    "ahmedabad", "jaipur", "coimbatore", "kochi", "indore",
+    "bhopal", "surat", "lucknow", "chandigarh", "nagpur",
+    "vizag", "visakhapatnam", "remote",
+]
+
+def parse_command(command):
+    c = command.lower().strip()
+
+    # Platform detection — typo-tolerant
+    on_linkedin = any(w in c for w in ["linkedin", "linked in", "linkdin", "linkd in", "linked-in", "linkedn"])
+    on_naukri   = any(w in c for w in ["naukri", "nokri", "noukri", "naukari", "naukrii"])
+    on_youtube  = ("youtube" in c or "you tube" in c or bool(re.search(r"\byt\b", c)))
+    on_google   = "google" in c
+
+    # Action detection
+    want_apply  = any(w in c for w in ["apply", "auto apply", "submit", "send application"])
+    want_search = any(w in c for w in ["search", "find", "show", "get", "list", "save", "open", "go", "browse"])
+
+    # Job title — longest match first
+    job_title = "Java Developer"
+    for kw in JOB_KEYWORDS:
+        if kw in c:
+            job_title = kw.title()
+            break
+
+    # Location
+    location = ""
+    for city in KNOWN_CITIES:
+        if city in c:
+            location = city.title()
+            break
+
+    # Number (max jobs to apply)
+    max_apply = 5
+    nums = re.findall(r"\b(\d+)\b", c)
+    if nums:
+        max_apply = int(nums[0])
+
+    # Determine intent
+    if on_youtube:
+        query = re.sub(r"\b(youtube|search|find|on)\b", "", c).strip()
+        return {"intent": "youtube_search", "query": query, "job_title": job_title, "location": location, "max_apply": max_apply}
+
+    if on_google:
+        query = re.sub(r"\b(google|search|find|on)\b", "", c).strip()
+        return {"intent": "google_search", "query": query, "job_title": job_title, "location": location, "max_apply": max_apply}
+
+    if on_linkedin:
+        intent = "linkedin_apply" if want_apply else "linkedin_search"
+        return {"intent": intent, "job_title": job_title, "location": location, "max_apply": max_apply, "query": ""}
+
+    if on_naukri or want_apply:
+        intent = "naukri_search" if (want_search and not want_apply) else "naukri_auto_apply"
+        return {"intent": intent, "job_title": job_title, "location": location, "max_apply": max_apply, "query": ""}
+
+    return {"intent": "unknown"}
+
+# ══════════════════════════════════════════════════════════
+# SMART ANSWER SYSTEM — profile first, ask user if unknown
+# ══════════════════════════════════════════════════════════
+
+QUICK_ANSWERS = {
+    "notice period":          MY_PROFILE["notice_period"],
+    "notice":                 MY_PROFILE["notice_period"],
+    "current ctc":            MY_PROFILE["current_ctc"],
+    "current salary":         MY_PROFILE["current_ctc"],
+    "expected ctc":           MY_PROFILE["expected_ctc"],
+    "expected salary":        MY_PROFILE["expected_ctc"],
+    "experience":             MY_PROFILE["experience_years"],
+    "years of experience":    MY_PROFILE["experience_years"],
+    "how many years":         MY_PROFILE["experience_years"],
+    "total experience":       MY_PROFILE["experience_years"],
+    "first name":             MY_PROFILE["first_name"],
+    "last name":              MY_PROFILE["last_name"],
+    "full name":              MY_PROFILE["name"],
+    "email":                  MY_PROFILE["email"],
+    "phone":                  MY_PROFILE["phone"],
+    "mobile":                 MY_PROFILE["phone"],
+    "contact":                MY_PROFILE["phone"],
+    "location":               MY_PROFILE["location"],
+    "city":                   MY_PROFILE["location"],
+    "gender":                 MY_PROFILE["gender"],
+    "degree":                 MY_PROFILE["degree"],
+    "college":                MY_PROFILE["college"],
+    "university":             MY_PROFILE["college"],
+    "passing year":           MY_PROFILE["passing_year"],
+    "graduation year":        MY_PROFILE["passing_year"],
+    "percentage":             MY_PROFILE["percentage"],
+    "cgpa":                   MY_PROFILE["percentage"],
+    "skills":                 MY_PROFILE["skills"],
+    "relocate":               "Yes",
+    "willing to relocate":    "Yes",
+    "authorized":             "Yes",
+    "work in india":          "Yes",
+    "immediate":              "Yes",
+    "project":                "Yes",
+    "worked on":              "Yes",
+    "fresher or experienced": "Experienced",
+    "fresher":                "Experienced",
+    "currently employed":     "Yes",
+    "currently working":      "Yes",
+    "java":                   "Yes",
+    "spring boot":            "Yes",
+    "microservices":          "Yes",
+}
+
+# Questions/placeholders that belong to the site's own UI — skip these
+UI_SKIP_WORDS = [
+    "enter keyword", "keyword", "designation", "companies",
+    "enter skills", "search jobs", "search", "where",
+    "city, state", "enter location", "what", "job title",
+    "enter city", "find jobs",
+]
+
+def auto_answer(question_text, options=None):
+    """Try to answer from profile. Returns string answer or None."""
+    q = question_text.lower().strip()
+
+    # Skip empty or UI navigation inputs
+    if not q or len(q) < 3:
+        return None
+    if any(skip in q for skip in UI_SKIP_WORDS):
+        return None
+
+    # Direct keyword match
+    for keyword, answer in QUICK_ANSWERS.items():
+        if keyword in q:
+            return str(answer)
+
+    # If options given, try to match profile answer to an option
+    if options:
+        for keyword, answer in QUICK_ANSWERS.items():
+            if keyword in q:
+                ans_lower = str(answer).lower()
+                for opt in options:
+                    if ans_lower in opt.lower() or opt.lower() in ans_lower:
+                        return opt
+
+    return None  # unknown — must ask user
+
+def ask_user(question_text, options=None):
+    """Ask the human operator in the terminal."""
+    print("\n" + "─" * 56)
+    print(f"  ❓ BOT QUESTION:")
+    print(f"  {question_text}")
+    if options:
+        print()
+        for i, opt in enumerate(options, 1):
+            print(f"    [{i}] {opt}")
+        print(f"\n  Type number OR your own answer:")
+    else:
+        print("  Type your answer:")
+    answer = input("  👉 ").strip()
+    if options and answer.isdigit():
+        idx = int(answer) - 1
+        if 0 <= idx < len(options):
+            answer = options[idx]
+            print(f"  ✅ Selected: '{answer}'")
+    print("─" * 56)
+    return answer if answer else "Yes"
+
+def smart_answer(question_text, options=None):
+    """Layer 1: profile auto. Layer 2: ask user."""
+    answer = auto_answer(question_text, options)
+    if answer:
+        print(f"      ⚡ Auto: '{question_text[:35]}' → '{answer}'")
+        return answer
+    return ask_user(question_text, options)
+
+# ══════════════════════════════════════════════════════════
+# BROWSER UTILITIES
+# ══════════════════════════════════════════════════════════
+
 def safe_goto(page, url, timeout=40000):
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=timeout)
@@ -56,10 +252,8 @@ def safe_goto(page, url, timeout=40000):
         print(f"   ❌ Nav error: {e}")
         return False
 
-# ─────────────────────────────────────────────
-# FILL INPUT SAFELY
-# ─────────────────────────────────────────────
 def fill_field(page, selectors, value):
+    """Try multiple selectors to fill an input."""
     for sel in selectors:
         try:
             el = page.query_selector(sel)
@@ -72,120 +266,102 @@ def fill_field(page, selectors, value):
             continue
     return False
 
-# ─────────────────────────────────────────────
-# AI ANSWER FOR ANY QUESTION
-# ─────────────────────────────────────────────
-def ai_answer_question(question_text, options=None):
-    options_str = f"\nOptions available: {', '.join(options)}" if options else ""
-    prompt = f"""You are filling a job application for this candidate:
-{MY_PROFILE['summary']}
-
-Question: "{question_text}"{options_str}
-
-Reply with ONLY the answer. No explanation. No punctuation.
-Rules:
-- Projects → Yes (has worked on microservices, REST API projects)
-- Work experience → Yes
-- Authorized to work in India → Yes  
-- Willing to relocate → Yes
-- Immediate joiner / notice period → Yes / 0 / Immediate
-- Years of experience → 1
-- Current CTC → 0
-- Expected CTC → 400000
-- Skills → Java, Spring Boot, REST APIs, MySQL
-- Gender → Male
-- Degree → Bachelor of Computer Science
-- Fresher or Experienced → Experienced
-
-Answer:"""
+def close_extra_tabs(browser, keep_page):
+    """Close all tabs except keep_page."""
     try:
-        r = requests.post(OLLAMA_URL, json={"model":MODEL,"prompt":prompt,"stream":False}, timeout=15)
-        answer = r.json()["response"].strip().split("\n")[0].strip().strip('"').strip("'")
-        return answer
-    except:
-        return "Yes"  # safe default
-
-# ─────────────────────────────────────────────
-# CHECK EXTERNAL APPLY
-# ─────────────────────────────────────────────
-def is_external_apply(page):
-    try:
-        body = page.inner_text("body").lower()[:5000]
-        if any(t in body for t in ["apply on company site","apply on employer site","apply at company"]):
-            return True
+        for p in browser.pages:
+            if p != keep_page:
+                try: p.close()
+                except: pass
     except:
         pass
-    for sel in ['a:has-text("Apply on company site")', 'button:has-text("Apply on company site")']:
-        try:
-            el = page.query_selector(sel)
-            if el and el.is_visible():
-                return True
-        except:
-            pass
-    return False
+    return keep_page
 
-# ─────────────────────────────────────────────
-# CHECK SUCCESS
-# ─────────────────────────────────────────────
-def check_success(page):
+def check_success_naukri(page):
+    """Check if Naukri application was submitted."""
     try:
+        url = page.url.lower()
+        if "saveapply" in url or "applyconfirmation" in url:
+            return True
+        title = page.title().lower()
+        if "apply confirmation" in title or "applied" in title:
+            return True
         body = page.inner_text("body").lower()[:5000]
         return any(t in body for t in [
-            "applied successfully","application submitted",
-            "you have already applied","application has been sent",
-            "successfully applied","thank you for applying",
-            "your application has been"
+            "applied successfully", "application submitted",
+            "you have already applied", "application has been sent",
+            "successfully applied", "thank you for applying",
+            "your application has been", 'applied to "',
+            "apply confirmation",
         ])
     except:
         return False
 
-# ─────────────────────────────────────────────
-# HANDLE NAUKRI CHATBOT MODAL
-# This is the key fix - handles the popup with
-# questions like "Did you work on any project?"
-# ─────────────────────────────────────────────
-def handle_chatbot_modal(page):
-    """Handles Naukri's chatbot-style question modal step by step."""
-    print("      💬 Handling chatbot questions...")
-    max_questions = 15
+def is_external_apply(page):
+    """
+    Returns True ONLY if the page has a clearly visible external-apply button.
+    Also verifies there is NO Naukri apply button present (to avoid false positives).
+    """
+    # First check: does a Naukri apply button exist? If yes, NOT external.
+    naukri_apply_selectors = [
+        'button[id="apply-button"]',
+        '#apply-button',
+        'button.apply-button',
+    ]
+    for sel in naukri_apply_selectors:
+        try:
+            btn = page.query_selector(sel)
+            if btn and btn.is_visible():
+                txt = (btn.inner_text() or "").lower()
+                # If Naukri apply button exists and doesn't say "company site" → NOT external
+                if "company site" not in txt and "employer site" not in txt:
+                    return False
+        except:
+            pass
 
-    for q_num in range(max_questions):
+    # Second check: is there an explicit external-apply link/button?
+    external_texts = [
+        "apply on company site", "apply on employer site",
+        "apply at company", "apply on company's site",
+    ]
+    for sel in [
+        'a[href]:has-text("Apply on company")',
+        'button:has-text("Apply on company")',
+        'a[href]:has-text("Apply on employer")',
+        'button:has-text("Apply on employer")',
+        'a[href]:has-text("Apply at company")',
+    ]:
+        try:
+            el = page.query_selector(sel)
+            if el and el.is_visible():
+                txt = el.inner_text().lower()
+                if any(t in txt for t in external_texts):
+                    return True
+        except:
+            pass
+
+    return False
+
+# ══════════════════════════════════════════════════════════
+# NAUKRI — CHATBOT MODAL HANDLER
+# ══════════════════════════════════════════════════════════
+
+def handle_naukri_chatbot(page):
+    """Handle Naukri's chatbot question popup."""
+    print("      💬 Chatbot detected — answering questions...")
+
+    for round_num in range(20):
         time.sleep(1.5)
 
-        # Check if modal is closed / success
-        if check_success(page):
-            print("      ✅ Application submitted via chatbot!")
+        if check_success_naukri(page):
             return True
 
-        # Find the modal container
-        modal = None
-        for sel in [
-            '.chatbot-container',
-            '[class*="chatbot"]',
-            '[class*="questionnaire"]',
-            '.apply-questionnaire',
-            '[data-test*="chatbot"]',
-            '.naukri-chatbot',
-        ]:
-            try:
-                el = page.query_selector(sel)
-                if el and el.is_visible():
-                    modal = el
-                    break
-            except:
-                pass
-
-        # Get current question text
+        # ── Get question text ───────────────────────────
         question_text = ""
         for sel in [
-            '.chatbot-message',
-            '[class*="question"]',
-            '.ssrc__question',
-            'p.question',
-            '[class*="chatbot"] p',
-            '[class*="questionnaire"] label',
-            '.modal p',
-            'div[class*="question"] p',
+            '.chatbot-message', '[class*="question"] p',
+            '.ssrc__question', '[class*="chatbot"] p',
+            '[class*="questionnaire"] label', '.modal p',
         ]:
             try:
                 el = page.query_selector(sel)
@@ -198,154 +374,127 @@ def handle_chatbot_modal(page):
                 pass
 
         if question_text:
-            print(f"      ❓ Question: {question_text[:60]}")
+            print(f"      ❓ {question_text[:70]}")
 
-        # ── Handle radio buttons in modal ──────────────────
-        radio_handled = False
+        # ── Radio buttons ───────────────────────────────
+        radio_done = False
         try:
-            # Find all radio options currently visible
             radios = page.query_selector_all('input[type="radio"]')
-            visible_radios = [(r, r) for r in radios if r.is_visible()]
+            visible_radios = [r for r in radios if r.is_visible()]
 
             if visible_radios:
-                # Get labels for each radio
-                option_map = []  # (label_text, radio_element)
-                for radio in radios:
-                    if not radio.is_visible():
-                        continue
+                option_map = []
+                for radio in visible_radios:
                     try:
                         rid = radio.get_attribute("id") or ""
                         val = radio.get_attribute("value") or ""
-
-                        # Try to get label text
-                        label_text = ""
+                        label_text = val
                         if rid:
                             lbl = page.query_selector(f'label[for="{rid}"]')
-                            if lbl:
+                            if lbl and lbl.is_visible():
                                 label_text = lbl.inner_text().strip()
-                        if not label_text:
-                            label_text = val
-
                         if label_text:
-                            option_map.append((label_text.lower(), radio, label_text))
+                            option_map.append((label_text, radio))
                     except:
                         continue
 
                 if option_map:
-                    options_list = [o[2] for o in option_map]
-                    print(f"      🔘 Options: {options_list}")
+                    labels = [o[0] for o in option_map]
+                    print(f"      🔘 Options: {labels}")
 
-                    # Ask AI which option to pick
-                    ai_ans = ai_answer_question(
-                        question_text or "Select the best option",
-                        options_list
-                    ).lower().strip()
+                    # Try profile auto-answer first
+                    answer = auto_answer(question_text or "", labels)
 
-                    print(f"      🤖 AI chose: '{ai_ans}'")
+                    if not answer:
+                        # Smart default for Yes/No: always pick Yes without asking user
+                        yes_options = [o for o in option_map if "yes" in o[0].lower()]
+                        no_options  = [o for o in option_map if "no" in o[0].lower()]
+                        if yes_options and len(option_map) == 2:
+                            # Binary Yes/No — default Yes silently
+                            answer = yes_options[0][0]
+                            print(f"      ⚡ Auto-Yes: '{answer}'")
+                        else:
+                            # Unknown multi-option — ask user
+                            answer = ask_user(question_text or "Select best option", labels)
 
-                    # Find best matching radio
                     clicked = False
-
-                    # First try exact / contains match
-                    for opt_lower, radio_el, opt_original in option_map:
-                        if ai_ans in opt_lower or opt_lower in ai_ans:
+                    answer_lower = answer.lower()
+                    for label, radio_el in option_map:
+                        if answer_lower in label.lower() or label.lower() in answer_lower:
                             try:
-                                radio_el.click()
-                                print(f"      ✅ Selected: '{opt_original}'")
-                                clicked = True
-                                radio_handled = True
-                                time.sleep(0.5)
-                                break
+                                radio_el.click(); clicked = True; radio_done = True
+                                print(f"      ✅ Selected: '{label}'")
+                                time.sleep(0.5); break
                             except:
                                 pass
 
-                    # If no match, pick "yes" or "skip this question" or first option
                     if not clicked:
-                        for opt_lower, radio_el, opt_original in option_map:
-                            if "yes" in opt_lower:
-                                try:
-                                    radio_el.click()
-                                    print(f"      ✅ Defaulted to: '{opt_original}'")
-                                    clicked = True
-                                    radio_handled = True
-                                    break
-                                except:
-                                    pass
-
+                        for label, radio_el in option_map:
+                            if "yes" in label.lower():
+                                try: radio_el.click(); clicked = True; radio_done = True; break
+                                except: pass
                     if not clicked:
-                        # Pick first option
-                        try:
-                            option_map[0][1].click()
-                            print(f"      ✅ Picked first option: '{option_map[0][2]}'")
-                            radio_handled = True
-                        except:
-                            pass
-
-                    time.sleep(0.5)
-        except Exception as e:
+                        try: option_map[0][1].click(); radio_done = True
+                        except: pass
+        except:
             pass
 
-        # ── Handle text inputs in modal ────────────────────
+        # ── Text / Number inputs ────────────────────────
         try:
             inputs = page.query_selector_all('input[type="text"], input[type="number"], input[type="tel"]')
             for inp in inputs:
-                if not inp.is_visible():
-                    continue
+                if not inp.is_visible(): continue
                 current = inp.input_value() or ""
-                if current.strip():
-                    continue  # already filled
-                placeholder = (inp.get_attribute("placeholder") or "").lower()
-                label_text  = question_text or placeholder
-
-                answer = ai_answer_question(label_text)
-                if answer:
-                    inp.triple_click()
-                    inp.fill(answer)
-                    print(f"      🤖 Filled: '{label_text[:40]}' → '{answer}'")
-                    time.sleep(0.3)
-        except:
-            pass
-
-        # ── Handle textarea ────────────────────────────────
-        try:
-            tas = page.query_selector_all("textarea")
-            for ta in tas:
-                if ta.is_visible():
-                    current = ta.input_value() or ""
-                    if not current.strip():
-                        ta.fill(f"Yes, I have worked on multiple Java projects including microservices and REST APIs using Spring Boot.")
-                        time.sleep(0.3)
-        except:
-            pass
-
-        # ── Handle select dropdowns ────────────────────────
-        try:
-            selects = page.query_selector_all("select")
-            for sel_el in selects:
-                if not sel_el.is_visible():
+                if current.strip(): continue
+                placeholder = (inp.get_attribute("placeholder") or "").strip()
+                # Skip Naukri's own search UI inputs
+                if any(skip in placeholder.lower() for skip in UI_SKIP_WORDS):
                     continue
-                answer = ai_answer_question(question_text or "Select option")
+                # Get label
+                label_text = question_text or placeholder
                 try:
-                    sel_el.select_option(label=answer)
-                except:
-                    try:
-                        sel_el.select_option(index=1)
-                    except:
-                        pass
+                    inp_id = inp.get_attribute("id") or ""
+                    if inp_id:
+                        lbl = page.query_selector(f'label[for="{inp_id}"]')
+                        if lbl: label_text = lbl.inner_text().strip()
+                except: pass
+                if not label_text: continue
+                answer = smart_answer(label_text)
+                if answer:
+                    inp.triple_click(); inp.fill(answer); time.sleep(0.3)
         except:
             pass
 
-        # ── Click Save / Next / Submit ─────────────────────
+        # ── Textarea ────────────────────────────────────
+        try:
+            for ta in page.query_selector_all("textarea"):
+                if ta.is_visible() and not (ta.input_value() or "").strip():
+                    ta.fill("Yes, I have worked on multiple Java projects including microservices and REST APIs using Spring Boot.")
+        except:
+            pass
+
+        # ── Dropdowns ───────────────────────────────────
+        try:
+            for sel_el in page.query_selector_all("select"):
+                if not sel_el.is_visible(): continue
+                answer = smart_answer(question_text or "Select option")
+                try: sel_el.select_option(label=answer)
+                except:
+                    try: sel_el.select_option(index=1)
+                    except: pass
+        except:
+            pass
+
+        # ── Click Save / Next / Submit ──────────────────
         time.sleep(0.5)
         btn_clicked = False
-
         for btn_text in ["Save", "Next", "Submit", "Continue", "Proceed", "Done"]:
             for sel in [
                 f'button:has-text("{btn_text}")',
-                f'[class*="save"]:has-text("{btn_text}")',
                 f'[class*="btn"]:has-text("{btn_text}")',
             ]:
                 try:
+                    # Re-fetch button each time to avoid stale ref
                     btn = page.query_selector(sel)
                     if btn and btn.is_visible():
                         btn.click()
@@ -358,130 +507,99 @@ def handle_chatbot_modal(page):
             if btn_clicked:
                 break
 
-        # Check success after clicking
-        if check_success(page):
-            print("      ✅ Applied successfully!")
+        if check_success_naukri(page):
             return True
 
-        # If nothing happened, check if modal closed
-        if not btn_clicked and not radio_handled:
-            # Try pressing Enter as last resort
-            try:
-                page.keyboard.press("Enter")
-                time.sleep(1)
-            except:
-                pass
+        if not btn_clicked and not radio_done:
+            try: page.keyboard.press("Enter"); time.sleep(1)
+            except: pass
             break
 
-    return check_success(page)
+    return check_success_naukri(page)
 
-# ─────────────────────────────────────────────
-# HANDLE FULL APPLY FLOW
-# ─────────────────────────────────────────────
-def handle_apply_flow(page):
-    max_steps = 15
+# ══════════════════════════════════════════════════════════
+# NAUKRI — APPLY FLOW
+# ══════════════════════════════════════════════════════════
 
-    for step in range(max_steps):
+def naukri_apply_flow(page):
+    """Handle the full Naukri application flow."""
+    for step in range(15):
         time.sleep(1.5)
 
-        if check_success(page):
+        if check_success_naukri(page):
             return True
 
-        # Check if chatbot modal is open
+        # Detect chatbot
         chatbot_open = False
-        for sel in [
-            '.chatbot-container', '[class*="chatbot"]',
-            '[class*="questionnaire"]', '.apply-questionnaire',
-            '[class*="recruiter-question"]',
-        ]:
+        for sel in ['.chatbot-container', '[class*="chatbot"]', '[class*="questionnaire"]', '.apply-questionnaire']:
             try:
                 el = page.query_selector(sel)
                 if el and el.is_visible():
-                    chatbot_open = True
-                    break
-            except:
-                pass
+                    chatbot_open = True; break
+            except: pass
 
-        # Also check if there are visible radio buttons (chatbot indicator)
+        # Radio buttons visible = chatbot indicator
         try:
-            radios = page.query_selector_all('input[type="radio"]')
-            if any(r.is_visible() for r in radios):
+            if any(r.is_visible() for r in page.query_selector_all('input[type="radio"]')):
                 chatbot_open = True
-        except:
-            pass
+        except: pass
 
         if chatbot_open:
-            result = handle_chatbot_modal(page)
-            if result:
-                return True
-            break
+            return handle_naukri_chatbot(page)
 
-        # Standard form filling
+        # Standard form fill
         fill_field(page, ['input[placeholder*="First name"]', 'input[id*="firstName"]'], MY_PROFILE["first_name"])
-        fill_field(page, ['input[placeholder*="Last name"]',  'input[id*="lastName"]'],  MY_PROFILE["last_name"])
-        fill_field(page, ['input[type="email"]'],                                          MY_PROFILE["email"])
-        fill_field(page, ['input[type="tel"]', 'input[placeholder*="phone"]'],             MY_PROFILE["phone"])
+        fill_field(page, ['input[placeholder*="Last name"]', 'input[id*="lastName"]'], MY_PROFILE["last_name"])
+        fill_field(page, ['input[type="email"]'], MY_PROFILE["email"])
+        fill_field(page, ['input[type="tel"]', 'input[placeholder*="phone"]'], MY_PROFILE["phone"])
         fill_field(page, ['input[placeholder*="current ctc"]', 'input[id*="currentCTC"]'], MY_PROFILE["current_ctc"])
-        fill_field(page, ['input[placeholder*="expected"]',    'input[id*="expectedCTC"]'],MY_PROFILE["expected_ctc"])
-        fill_field(page, ['input[placeholder*="notice"]',      'input[id*="notice"]'],     MY_PROFILE["notice_period"])
-        fill_field(page, ['input[placeholder*="experience"]',  'input[id*="experience"]'], MY_PROFILE["experience_years"])
+        fill_field(page, ['input[placeholder*="expected"]', 'input[id*="expectedCTC"]'], MY_PROFILE["expected_ctc"])
+        fill_field(page, ['input[placeholder*="notice"]', 'input[id*="notice"]'], MY_PROFILE["notice_period"])
+        fill_field(page, ['input[placeholder*="experience"]', 'input[id*="experience"]'], MY_PROFILE["experience_years"])
 
-        # Upload resume
+        # Resume upload
         try:
             for fi in page.query_selector_all('input[type="file"]'):
-                try:
-                    fi.set_input_files(MY_PROFILE["resume_path"])
-                    time.sleep(1); break
-                except:
-                    pass
-        except:
-            pass
+                try: fi.set_input_files(MY_PROFILE["resume_path"]); time.sleep(1); break
+                except: pass
+        except: pass
 
-        # Click Submit / Apply
+        # Submit
         submitted = False
-        for sel in [
-            'button:has-text("Apply Now")',
-            'button:has-text("Apply")',
-            'button:has-text("Submit")',
-            'button[type="submit"]',
-        ]:
+        for sel in ['button:has-text("Apply Now")', 'button:has-text("Apply")',
+                    'button:has-text("Submit")', 'button[type="submit"]']:
             try:
                 btn = page.query_selector(sel)
                 if btn and btn.is_visible():
-                    btn.click(); time.sleep(2)
-                    submitted = True
-                    break
-            except:
-                pass
+                    btn.click(); time.sleep(2); submitted = True; break
+            except: pass
 
-        if check_success(page):
+        if check_success_naukri(page):
             return True
-
         if not submitted:
             break
 
-    return check_success(page)
+    return check_success_naukri(page)
 
-# ─────────────────────────────────────────────
-# SCRAPE NAUKRI JOBS
-# ─────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════
+# NAUKRI — SCRAPE JOBS
+# ══════════════════════════════════════════════════════════
+
 def scrape_naukri_jobs(page):
-    jobs = []
-    print("   🕷️  Scraping jobs...")
+    print("   🕷️  Scraping Naukri jobs...")
     for _ in range(4):
         page.mouse.wheel(0, 800); time.sleep(0.7)
     try:
         page.wait_for_selector(".srp-jobtuple-wrapper, .jobTuple", timeout=10000)
-    except:
-        pass
+    except: pass
 
     cards = []
     for sel in [".srp-jobtuple-wrapper", ".jobTuple", "article.jobTuple"]:
         c = page.query_selector_all(sel)
         if c: cards = c; break
 
-    print(f"   📦 Found {len(cards)} jobs")
-
+    print(f"   📦 Found {len(cards)} job cards")
+    jobs = []
     for card in cards:
         try:
             t  = card.query_selector("a.title, .title a, h2 a")
@@ -490,13 +608,9 @@ def scrape_naukri_jobs(page):
             sa = card.query_selector(".sal-wrap li, .salary")
             lo = card.query_selector(".loc-wrap li, .location")
             po = card.query_selector(".job-post-day, .postDays, span.type-time")
-
             title = t.inner_text().strip() if t else "N/A"
-            link  = ""
-            if t:
-                href = t.get_attribute("href") or ""
-                link = href if href.startswith("http") else "https://www.naukri.com" + href
-
+            href  = (t.get_attribute("href") or "") if t else ""
+            link  = href if href.startswith("http") else "https://www.naukri.com" + href
             if title != "N/A":
                 jobs.append({
                     "title":    title,
@@ -506,265 +620,759 @@ def scrape_naukri_jobs(page):
                     "location": lo.inner_text().strip() if lo else "N/A",
                     "posted":   po.inner_text().strip() if po else "N/A",
                     "link":     link,
-                    "applied":  "Pending"
+                    "applied":  "Pending",
                 })
-        except:
+        except: continue
+
+    # Deduplicate by job link (same URL = same posting)
+    seen_links = set()
+    seen_company_title = {}  # company → count, to limit spam (max 2 per company)
+    deduped = []
+    for job in jobs:
+        link = job.get("link", "")
+        company = job.get("company", "").lower().strip()
+        title = job.get("title", "").lower().strip()
+
+        # Skip exact duplicate URLs
+        if link and link in seen_links:
+            continue
+        # Limit same company to max 3 listings (avoids Accenture spam but keeps variety)
+        company_count = seen_company_title.get(company, 0)
+        if company_count >= 3:
             continue
 
-    print(f"   ✅ Scraped {len(jobs)} jobs!")
-    return jobs
+        seen_links.add(link)
+        seen_company_title[company] = company_count + 1
+        deduped.append(job)
 
-# ─────────────────────────────────────────────
-# AUTO APPLY
-# ─────────────────────────────────────────────
-def naukri_auto_apply(page, job_title, location="", max_apply=5):
-    print(f"\n🤖 NAUKRI AUTO APPLY: '{job_title}'")
-    print(f"   ⏰ Last 24 hours only | 🎯 Max: {max_apply}\n")
+    removed = len(jobs) - len(deduped)
+    if removed > 0:
+        print(f"   🔁 Removed {removed} duplicate/spam listings")
+    print(f"   ✅ Scraped {len(deduped)} unique jobs")
+    return deduped
 
-    # Check login
+# ══════════════════════════════════════════════════════════
+# NAUKRI — AUTO APPLY
+# ══════════════════════════════════════════════════════════
+
+def naukri_auto_apply(browser, page, job_title, location="", max_apply=5):
+    print(f"\n{'='*58}")
+    print(f"  🤖 NAUKRI AUTO APPLY: '{job_title}'")
+    print(f"  ⏰ Last 24h filter ON  |  🎯 Max: {max_apply}")
+    print(f"{'='*58}\n")
+
+    # Ensure logged in
     safe_goto(page, "https://www.naukri.com/mnjuser/homepage", timeout=30000)
     time.sleep(2)
     if "login" in page.url or "mnjuser" not in page.url:
-        print("⚠️  Please login to Naukri then press ENTER...")
+        print("⚠️  Not logged in! Please login to Naukri in the browser, then press ENTER here...")
         input()
 
-    keyword = job_title.lower().replace(" ", "-")
-    url = (f"https://www.naukri.com/{keyword}-jobs"
-           + (f"-in-{location.lower().replace(' ','-')}" if location and location.lower() != "any" else "")
-           + f"?experienceMin=0&experienceMax=2&freshness=1")
+    loc_part = f"-in-{location.lower().replace(' ', '-')}" if location and location.lower() not in ["any", ""] else ""
+    keyword  = job_title.lower().replace(" ", "-")
 
-    print(f"   🔗 {url}")
-    safe_goto(page, url, timeout=40000)
-    time.sleep(2)
+    # Search strategy: try progressively wider filters until we get enough jobs
+    # Order: 24h+location → 7days+location → alltime+location → 24h+nolocation → alltime+nolocation
+    search_attempts = []
+    if loc_part:
+        search_attempts += [
+            (f"&freshness=1", loc_part,  "24h + " + location),
+            (f"&freshness=7", loc_part,  "7 days + " + location),
+            ("",              loc_part,  "all time + " + location),
+            (f"&freshness=1", "",        "24h (any location)"),
+            ("",              "",        "all time (any location)"),
+        ]
+    else:
+        search_attempts += [
+            (f"&freshness=1", "", "24 hours"),
+            (f"&freshness=7", "", "7 days"),
+            ("",              "", "all time"),
+        ]
 
-    jobs = scrape_naukri_jobs(page)
+    jobs = []
+    for fresh_param, lp, label in search_attempts:
+        url = f"https://www.naukri.com/{keyword}-jobs{lp}?experienceMin=0&experienceMax=2{fresh_param}"
+        print(f"   🔗 Trying: [{label}]")
+        safe_goto(page, url, timeout=40000)
+        time.sleep(2)
+        jobs = scrape_naukri_jobs(page)
+        jobs = [j for j in jobs if j.get("title") and j.get("company")]
+        if len(jobs) >= max_apply:
+            print(f"   ✅ Found {len(jobs)} jobs [{label}]")
+            break
+        elif jobs:
+            print(f"   ⚠️  Only {len(jobs)} jobs [{label}] — trying wider...")
+        else:
+            print(f"   ⚠️  No jobs [{label}] — trying wider...")
+
     if not jobs:
-        print("   ❌ No jobs found.")
+        print("   ❌ No jobs found. Try a different job title.")
         return []
 
-    applied_count = 0; skipped_ext = 0; skipped_err = 0
+    applied_count = skipped_ext = skipped_err = 0
     applied_jobs  = []
     search_url    = page.url
 
-    for i, job in enumerate(jobs):
+    # Load already-applied links from session memory
+    already_applied = getattr(naukri_auto_apply, "_applied_links", set())
+
+    for job in jobs:
+        # Skip jobs we already applied to in this session
+        if job.get("link") in already_applied:
+            print(f"  ⏭️  Already applied this session — skipping {job['title']}")
+            job["applied"] = "Skipped (Already applied)"
+            skipped_err += 1
+            continue
         if applied_count >= max_apply:
             print(f"\n✅ Reached limit of {max_apply}!")
             break
         if not job.get("link"):
             continue
 
-        print(f"\n   [{applied_count+1}/{max_apply}] {job['title']} @ {job['company']}")
-        print(f"   💰 {job['salary']} | 📍 {job['location']} | ⏰ {job['posted']}")
+        print(f"\n  [{applied_count+1}/{max_apply}] {job['title']} @ {job['company']}")
+        print(f"  💰 {job['salary']}  📍 {job['location']}  ⏰ {job['posted']}")
 
+        tabs_before = len(browser.pages)
         safe_goto(page, job["link"], timeout=30000)
-        time.sleep(2)
 
-        # Skip external
-        if is_external_apply(page):
-            print("      🚫 External site — SKIPPING")
-            job["applied"] = "Skipped (External)"
-            skipped_ext += 1
-            safe_goto(page, search_url, timeout=30000)
-            time.sleep(1); continue
+        # Wait for the apply button area to load before checking anything
+        try:
+            page.wait_for_selector(
+                '#apply-button, button[id="apply-button"], .apply-button, a:has-text("Apply on company")',
+                timeout=8000
+            )
+        except:
+            pass
+        time.sleep(1)
 
-        # Find Apply button
+        # Find Apply button — check ALL visible apply-related buttons first
         apply_btn = None
-        for sel in [
-            'button[id="apply-button"]',
-            'button:has-text("Apply")',
-            '#apply-button',
-            '.apply-button',
-            '.btn-apply',
-        ]:
+        is_ext    = False
+
+        # Priority 1: Naukri's exact apply button by ID (most reliable)
+        for sel in ['button[id="apply-button"]', '#apply-button']:
             try:
                 btn = page.query_selector(sel)
                 if btn and btn.is_visible():
-                    txt = (btn.inner_text() or "").lower()
-                    if "company site" not in txt and "employer site" not in txt:
-                        apply_btn = btn; break
-            except:
-                pass
+                    txt = (btn.inner_text() or "").lower().strip()
+                    print(f"     🔍 Found apply btn: '{txt[:40]}'")
+                    if "company site" in txt or "employer site" in txt:
+                        is_ext = True
+                    else:
+                        apply_btn = btn
+                    break
+            except: pass
+
+        # Priority 2: Any visible link/button explicitly saying external
+        if not apply_btn and not is_ext:
+            for sel in [
+                'a[href]:has-text("Apply on company site")',
+                'a[href]:has-text("Apply on employer site")',
+                'button:has-text("Apply on company site")',
+                'button:has-text("Apply on employer site")',
+            ]:
+                try:
+                    btn = page.query_selector(sel)
+                    if btn and btn.is_visible():
+                        print(f"     🔍 External link found: '{(btn.inner_text() or '')[:40]}'")
+                        is_ext = True
+                        break
+                except: pass
+
+        # Priority 3: Apply button by class (fallback)
+        if not apply_btn and not is_ext:
+            for sel in ['.apply-button', '.btn-apply', '[class*="apply-button"]']:
+                try:
+                    btn = page.query_selector(sel)
+                    if btn and btn.is_visible():
+                        txt = (btn.inner_text() or "").lower().strip()
+                        print(f"     🔍 Class apply btn: '{txt[:40]}'")
+                        if "company site" not in txt and "employer site" not in txt:
+                            apply_btn = btn
+                        break
+                except: pass
+
+        if is_ext:
+            print("     🚫 External apply — skipping")
+            job["applied"] = "Skipped (External)"; skipped_ext += 1
+            safe_goto(page, search_url, timeout=30000); time.sleep(1); continue
 
         if not apply_btn:
-            print("      ⏭️  No Apply button — skipping")
-            job["applied"] = "Skipped (No button)"
-            skipped_err += 1
-            safe_goto(page, search_url, timeout=30000)
-            time.sleep(1); continue
+            print("     ⏭️  No Apply button found — skipping")
+            job["applied"] = "Skipped (No button)"; skipped_err += 1
+            safe_goto(page, search_url, timeout=30000); time.sleep(1); continue
 
         apply_btn.click()
-        time.sleep(2)
+        time.sleep(2.5)
 
-        if is_external_apply(page):
-            print("      🚫 Redirected to external — SKIPPING")
-            job["applied"] = "Skipped (External)"
-            skipped_ext += 1
-            try: page.go_back()
-            except: pass
-            safe_goto(page, search_url, timeout=30000)
-            time.sleep(1); continue
+        # Check if new tab opened
+        tabs_after = len(browser.pages)
+        active_page = page
+        if tabs_after > tabs_before:
+            print(f"     🆕 New tab opened — switching...")
+            for p in browser.pages:
+                if p != page:
+                    active_page = p
+                    active_page.bring_to_front()
+                    time.sleep(1.5)
+                    print(f"     📄 {active_page.url[:65]}")
+                    break
 
-        print("      📝 Filling application form...")
-        success = handle_apply_flow(page)
+        # Immediate success check (direct confirm page)
+        if check_success_naukri(active_page):
+            print("     🎉 Already applied! (Confirmation page)")
+            applied_count += 1
+            job["applied"] = "Applied ✅"
+            applied_jobs.append({**job, "time": datetime.now().strftime("%d %b %Y %H:%M")})
+            close_extra_tabs(browser, page)
+            safe_goto(page, search_url, timeout=30000); time.sleep(1.5); continue
+
+        if is_external_apply(active_page):
+            print("     🚫 Redirected to external — skipping")
+            job["applied"] = "Skipped (External)"; skipped_ext += 1
+            close_extra_tabs(browser, page)
+            safe_goto(page, search_url, timeout=30000); time.sleep(1); continue
+
+        print("     📝 Filling application...")
+        success = naukri_apply_flow(active_page)
 
         if success:
             applied_count += 1
             job["applied"] = "Applied ✅"
             applied_jobs.append({**job, "time": datetime.now().strftime("%d %b %Y %H:%M")})
-            print(f"      🎉 APPLIED! Total: {applied_count}")
+            # Remember this link so we never double-apply in the same session
+            if not hasattr(naukri_auto_apply, "_applied_links"):
+                naukri_auto_apply._applied_links = set()
+            naukri_auto_apply._applied_links.add(job.get("link", ""))
+            print(f"     🎉 APPLIED! Total: {applied_count}")
         else:
-            job["applied"] = "Skipped (Form error)"
-            skipped_err += 1
-            print("      ⚠️  Could not complete — skipping")
-            try: page.keyboard.press("Escape")
+            job["applied"] = "Skipped (Form error)"; skipped_err += 1
+            print("     ⚠️  Could not complete")
+            try: active_page.keyboard.press("Escape")
             except: pass
 
+        close_extra_tabs(browser, page)
+        print("     🔄 Returning to search...")
         safe_goto(page, search_url, timeout=30000)
         time.sleep(1.5)
 
-    print(f"\n{'='*55}")
-    print(f"  🏆 DONE! Applied: {applied_count} | External skipped: {skipped_ext} | Errors: {skipped_err}")
-    print(f"{'='*55}")
-    save_excel(jobs, job_title, applied_count)
+    print(f"\n{'='*58}")
+    print(f"  🏆 Applied: {applied_count}  |  External skipped: {skipped_ext}  |  Errors: {skipped_err}")
+    print(f"{'='*58}")
+    save_naukri_excel(jobs, job_title, applied_count)
     return applied_jobs
 
-# ─────────────────────────────────────────────
-# SEARCH ONLY
-# ─────────────────────────────────────────────
 def naukri_search_only(page, job_title, location=""):
     print(f"\n🔍 Naukri Search: '{job_title}' (last 24h)")
     safe_goto(page, "https://www.naukri.com/mnjuser/homepage", timeout=30000)
-    keyword = job_title.lower().replace(" ", "-")
-    url = (f"https://www.naukri.com/{keyword}-jobs"
-           + (f"-in-{location.lower()}" if location and location.lower() != "any" else "")
-           + "?freshness=1")
-    safe_goto(page, url, timeout=40000)
-    time.sleep(2)
+    loc_part = f"-in-{location.lower()}" if location and location.lower() not in ["any", ""] else ""
+    keyword  = job_title.lower().replace(" ", "-")
+    url = f"https://www.naukri.com/{keyword}-jobs{loc_part}?freshness=1"
+    safe_goto(page, url, timeout=40000); time.sleep(2)
     jobs = scrape_naukri_jobs(page)
     if jobs:
-        ans = input(f"\n💾 Save {len(jobs)} jobs to Excel? (yes/no): ").strip().lower()
-        if ans in ["yes","y",""]:
-            save_excel(jobs, job_title)
+        save_naukri_excel(jobs, job_title)
+        print(f"✅ Saved {len(jobs)} jobs to Excel!")
     else:
-        print("   ❌ No jobs found.")
+        print("❌ No jobs found.")
 
-# ─────────────────────────────────────────────
-# SAVE EXCEL
-# ─────────────────────────────────────────────
-def save_excel(jobs, job_title, applied_count=0):
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filepath  = os.path.join(EXCEL_DIR, f"Naukri_{job_title.replace(' ','_')}_{timestamp}.xlsx")
-    wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Naukri Jobs"
-    DARK="1F3864"; LIGHT="D9E1F2"; WHITE="FFFFFF"; GREEN="C6EFCE"; RED="FFC7CE"; YELLOW="FFEB9C"
-    thin=Side(style="thin",color="CCCCCC"); bdr=Border(left=thin,right=thin,top=thin,bottom=thin)
+# ══════════════════════════════════════════════════════════
+# LINKEDIN — AUTO APPLY
+# ══════════════════════════════════════════════════════════
 
-    ws.merge_cells("A1:I1"); c=ws["A1"]
-    c.value=f"Naukri Jobs (24h) · {job_title.title()} · {datetime.now().strftime('%d %b %Y')} · Applied: {applied_count}"
-    c.font=Font(name="Arial",bold=True,size=13,color="FFD700")
-    c.fill=PatternFill("solid",fgColor=DARK); c.alignment=Alignment(horizontal="center",vertical="center")
-    ws.row_dimensions[1].height=28
+def linkedin_auto_apply(browser, page, job_title, location="", max_apply=5):
+    print(f"\n{'='*58}")
+    print(f"  💼 LINKEDIN AUTO APPLY: '{job_title}'")
+    print(f"  🎯 Max: {max_apply} | Easy Apply only")
+    print(f"{'='*58}\n")
 
-    for ci,h in enumerate(["#","Job Title","Company","Exp","Salary","Location","Posted","Link","Status"],1):
-        c=ws.cell(2,ci,h); c.font=Font(name="Arial",bold=True,size=11,color="FFFFFF")
-        c.fill=PatternFill("solid",fgColor=DARK); c.alignment=Alignment(horizontal="center"); c.border=bdr
-    ws.row_dimensions[2].height=22
+    # Ensure logged in
+    safe_goto(page, "https://www.linkedin.com/feed/", timeout=30000)
+    time.sleep(2)
+    if "login" in page.url or "authwall" in page.url:
+        print("⚠️  Not logged in! Please login to LinkedIn in the browser, then press ENTER...")
+        input()
 
-    for i,job in enumerate(jobs,1):
-        r=i+2; status=job.get("applied","Pending")
-        fc = GREEN if "Applied" in status else YELLOW if "External" in status else RED if "error" in status.lower() or "Skipped" in status else (LIGHT if i%2==0 else WHITE)
-        row=[i,job["title"],job["company"],job.get("exp","N/A"),job["salary"],job["location"],job["posted"],job["link"],status]
-        for ci,val in enumerate(row,1):
-            c=ws.cell(r,ci,val); c.font=Font(name="Arial",size=10)
-            c.fill=PatternFill("solid",fgColor=fc); c.border=bdr
-            c.alignment=Alignment(vertical="center",horizontal="center" if ci in(1,4,7,9) else "left",wrap_text=True)
-            if ci==8 and isinstance(val,str) and val.startswith("http"):
-                c.hyperlink=val; c.value="🔗 View"; c.font=Font(name="Arial",size=10,color="1155CC",underline="single")
-        ws.row_dimensions[r].height=20
+    kw  = job_title.replace(" ", "%20")
+    loc = location.replace(" ", "%20") if location and location.lower() not in ["any", ""] else "India"
+    url = f"https://www.linkedin.com/jobs/search/?keywords={kw}&location={loc}&f_LF=f_AL&f_TPR=r86400"
+    print(f"   🔗 {url}")
+    safe_goto(page, url, timeout=40000)
+    time.sleep(3)
 
-    for ci,w in enumerate([4,35,22,12,18,16,12,10,18],1):
-        ws.column_dimensions[get_column_letter(ci)].width=w
-    ws.freeze_panes="A3"; ws.auto_filter.ref=f"A2:I{len(jobs)+2}"
-    wb.save(filepath); print(f"\n💾 Saved → {filepath}")
+    applied_count = skipped = 0
+    jobs_data     = []
 
-# ─────────────────────────────────────────────
-# ASK AI
-# ─────────────────────────────────────────────
-def ask_ai(command):
-    print(f"\n🤖 AI thinking...")
-    prompt = f"""Return ONLY JSON. No explanation.
-Fields: intent (naukri_auto_apply|naukri_search|youtube_search|google_search), job_title, location, max_apply (default 5), query.
-User: {command}"""
+    # Scroll to load more jobs
+    for _ in range(3):
+        page.mouse.wheel(0, 1000); time.sleep(0.8)
+
     try:
-        r=requests.post(OLLAMA_URL,json={"model":MODEL,"prompt":prompt,"stream":False},timeout=30)
-        result=r.json()["response"].strip()
-        if "```" in result:
-            for p in result.split("```"):
-                if "{" in p: result=p.strip().lstrip("json").strip(); break
-        s=result.find("{"); e=result.rfind("}")+1
-        if s!=-1: result=result[s:e]
-        print(f"📋 {result}")
-        return json.loads(result)
-    except Exception as ex:
-        print(f"❌ AI Error: {ex}"); return {"intent":"unknown"}
+        page.wait_for_selector(".jobs-search-results__list-item, .scaffold-layout__list-item", timeout=10000)
+    except: pass
 
-# ─────────────────────────────────────────────
-# EXECUTE
-# ─────────────────────────────────────────────
-def execute(ai_result, page):
-    intent=ai_result.get("intent","unknown")
-    if intent=="naukri_auto_apply":
-        n=int(ai_result.get("max_apply",5))
-        if input(f"\n⚠️  Apply to {n} Naukri jobs (last 24h)? (yes/no): ").strip().lower() in ["yes","y"]:
-            naukri_auto_apply(page,ai_result.get("job_title","java developer"),ai_result.get("location","any"),n)
-        else: print("Cancelled.")
-    elif intent=="naukri_search":
-        naukri_search_only(page,ai_result.get("job_title","java developer"),ai_result.get("location","any"))
-    elif intent=="youtube_search":
-        safe_goto(page,f"https://www.youtube.com/results?search_query={ai_result.get('query','').replace(' ','+')}"); print("✅ YouTube!")
-    elif intent=="google_search":
-        safe_goto(page,f"https://www.google.com/search?q={ai_result.get('query','').replace(' ','+')}"); print("✅ Google!")
-    else: print("⚠️ Try: 'auto apply java jobs on naukri'")
+    cards = page.query_selector_all(".jobs-search-results__list-item, .scaffold-layout__list-item")
+    print(f"   📦 Found {len(cards)} job cards\n")
 
-# ─────────────────────────────────────────────
+    for idx in range(len(cards)):
+        if applied_count >= max_apply:
+            print(f"\n✅ Reached limit of {max_apply}!")
+            break
+
+        try:
+            # Re-fetch cards every iteration to avoid stale DOM
+            cards_fresh = page.query_selector_all(".jobs-search-results__list-item, .scaffold-layout__list-item")
+            if idx >= len(cards_fresh):
+                break
+            card = cards_fresh[idx]
+            card.click()
+            time.sleep(2.5)
+
+            # Get job details from right panel
+            title_el   = page.query_selector("h1.t-24, .job-details-jobs-unified-top-card__job-title h1")
+            company_el = page.query_selector(".job-details-jobs-unified-top-card__company-name a, .job-details-jobs-unified-top-card__subtitle-top-block a")
+            title   = title_el.inner_text().strip()   if title_el   else f"Job #{idx+1}"
+            company = company_el.inner_text().strip()  if company_el else "N/A"
+
+            print(f"  [{applied_count+1}/{max_apply}] {title} @ {company}")
+
+            # Find Easy Apply button in the panel
+            easy_apply = None
+            for sel in [
+                'button.jobs-apply-button:has-text("Easy Apply")',
+                'button:has-text("Easy Apply")',
+                '.jobs-apply-button',
+                'button[aria-label*="Easy Apply"]',
+            ]:
+                try:
+                    btn = page.query_selector(sel)
+                    if btn and btn.is_visible():
+                        easy_apply = btn; break
+                except: pass
+
+            if not easy_apply:
+                print("     ⏭️  No Easy Apply — skipping")
+                skipped += 1
+                jobs_data.append({"title": title, "company": company, "applied": "Skipped (No Easy Apply)"})
+                continue
+
+            easy_apply.click()
+            time.sleep(2)
+
+            # Fill the modal
+            success = linkedin_fill_modal(page)
+
+            if success:
+                applied_count += 1
+                jobs_data.append({"title": title, "company": company, "applied": "Applied ✅",
+                                   "time": datetime.now().strftime("%d %b %Y %H:%M")})
+                print(f"     🎉 APPLIED! Total: {applied_count}")
+            else:
+                skipped += 1
+                jobs_data.append({"title": title, "company": company, "applied": "Skipped (Form error)"})
+                print("     ⚠️  Could not complete")
+                # Discard modal
+                try:
+                    page.keyboard.press("Escape"); time.sleep(1)
+                    discard = page.query_selector('button:has-text("Discard")')
+                    if discard and discard.is_visible():
+                        discard.click(); time.sleep(1)
+                except: pass
+
+        except Exception as e:
+            print(f"     ❌ {e}")
+            skipped += 1
+            try:
+                page.keyboard.press("Escape"); time.sleep(1)
+                discard = page.query_selector('button:has-text("Discard")')
+                if discard and discard.is_visible():
+                    discard.click(); time.sleep(1)
+            except: pass
+            continue
+
+    print(f"\n{'='*58}")
+    print(f"  🏆 Applied: {applied_count}  |  Skipped: {skipped}")
+    print(f"{'='*58}")
+    if jobs_data:
+        save_linkedin_excel(jobs_data, job_title, applied_count)
+    return jobs_data
+
+
+def linkedin_fill_modal(page):
+    """
+    Fill LinkedIn Easy Apply multi-step modal.
+    Re-fetches every element each step to avoid stale DOM errors.
+    """
+    for step in range(15):
+        time.sleep(1.5)
+
+        # Check if modal is still open
+        modal = None
+        for sel in ['.jobs-easy-apply-modal', '[data-test-modal]', 'div[role="dialog"]']:
+            try:
+                el = page.query_selector(sel)
+                if el and el.is_visible():
+                    modal = el; break
+            except: pass
+
+        if not modal:
+            # Modal closed — check success
+            time.sleep(1)
+            try:
+                body = page.inner_text("body").lower()[:3000]
+                if any(t in body for t in ["application submitted", "applied", "your application was sent"]):
+                    return True
+            except: pass
+            return True  # modal gone = submitted
+
+        # ── Phone number ───────────────────────────────
+        fill_field(page, [
+            'input[id*="phoneNumber"]',
+            'input[placeholder*="phone"]',
+            'input[placeholder*="Phone"]',
+        ], MY_PROFILE["phone"])
+
+        # ── Text / Number inputs ───────────────────────
+        try:
+            inputs = page.query_selector_all('input[type="text"], input[type="number"]')
+            for inp in inputs:
+                if not inp.is_visible(): continue
+                if (inp.input_value() or "").strip(): continue
+                # Get label
+                label_text = ""
+                try:
+                    inp_id = inp.get_attribute("id") or ""
+                    if inp_id:
+                        lbl = page.query_selector(f'label[for="{inp_id}"]')
+                        if lbl: label_text = lbl.inner_text().strip()
+                except: pass
+                if not label_text:
+                    label_text = inp.get_attribute("placeholder") or "years of experience"
+                answer = smart_answer(label_text)
+                if answer:
+                    inp.triple_click(); inp.fill(answer); time.sleep(0.2)
+        except: pass
+
+        # ── Radio buttons ──────────────────────────────
+        try:
+            radios = page.query_selector_all('input[type="radio"]')
+            visible = [r for r in radios if r.is_visible()]
+            if visible:
+                option_map = []
+                for r in visible:
+                    try:
+                        rid = r.get_attribute("id") or ""
+                        lbl_el = page.query_selector(f'label[for="{rid}"]') if rid else None
+                        label = lbl_el.inner_text().strip() if lbl_el else (r.get_attribute("value") or "")
+                        if label: option_map.append((label, r))
+                    except: pass
+
+                if option_map:
+                    labels = [o[0] for o in option_map]
+                    # Get the question label from modal
+                    q_text = ""
+                    try:
+                        q_el = page.query_selector('.jobs-easy-apply-form-element legend, .fb-form-element-label')
+                        if q_el: q_text = q_el.inner_text().strip()
+                    except: pass
+                    answer = smart_answer(q_text or "Select best option", labels)
+                    ans_lower = answer.lower()
+                    clicked = False
+                    for label, rel in option_map:
+                        if ans_lower in label.lower() or label.lower() in ans_lower:
+                            try: rel.click(); clicked = True; time.sleep(0.3); break
+                            except: pass
+                    if not clicked:
+                        for label, rel in option_map:
+                            if "yes" in label.lower():
+                                try: rel.click(); clicked = True; break
+                                except: pass
+                    if not clicked and option_map:
+                        try: option_map[0][1].click()
+                        except: pass
+        except: pass
+
+        # ── Dropdowns ──────────────────────────────────
+        try:
+            for sel_el in page.query_selector_all("select"):
+                if not sel_el.is_visible(): continue
+                try: sel_el.select_option(index=1)
+                except: pass
+        except: pass
+
+        # ── Click button — re-fetch every time ────────
+        btn_clicked = False
+        for btn_text in ["Submit application", "Submit", "Review", "Next", "Continue", "Done"]:
+            try:
+                # Always re-query, never store element reference across steps
+                btn = page.query_selector(f'button:has-text("{btn_text}")')
+                if btn and btn.is_visible() and btn.is_enabled():
+                    btn.click()
+                    print(f"     ▶ '{btn_text}'")
+                    btn_clicked = True
+                    time.sleep(2)
+                    break
+            except: pass
+
+        if not btn_clicked:
+            # Try footer buttons inside modal
+            try:
+                footer_btns = page.query_selector_all('.jobs-easy-apply-modal footer button, [data-test-modal] footer button')
+                for btn in reversed(footer_btns):  # last button = primary action
+                    if btn.is_visible() and btn.is_enabled():
+                        txt = (btn.inner_text() or "").strip()
+                        if txt:
+                            btn.click()
+                            print(f"     ▶ Footer: '{txt}'")
+                            btn_clicked = True
+                            time.sleep(2)
+                            break
+            except: pass
+
+        if not btn_clicked:
+            break  # stuck — give up
+
+        # Check success after submit
+        try:
+            body = page.inner_text("body").lower()[:3000]
+            if any(t in body for t in ["application submitted", "your application was sent", "done"]):
+                return True
+        except: pass
+
+    return False
+
+
+def linkedin_search(page, job_title, location=""):
+    kw  = job_title.replace(" ", "%20")
+    loc = location.replace(" ", "%20") if location and location.lower() not in ["any", ""] else "India"
+    url = f"https://www.linkedin.com/jobs/search/?keywords={kw}&location={loc}&f_TPR=r86400"
+    print(f"\n🔗 Opening LinkedIn: {job_title} in {loc}")
+    safe_goto(page, url, timeout=40000)
+    print("✅ LinkedIn jobs opened!")
+    print("   💡 Say 'apply to java jobs on linkedin' to auto-apply.")
+
+# ══════════════════════════════════════════════════════════
+# EXCEL EXPORT
+# ══════════════════════════════════════════════════════════
+
+def _excel_style(ws, title_text, headers, rows, col_widths):
+    """Shared Excel styling helper."""
+    DARK = "1F3864"; WHITE = "FFFFFF"; GOLD = "FFD700"
+    GREEN = "C6EFCE"; YELLOW = "FFEB9C"; RED = "FFC7CE"; LIGHT = "D9E1F2"
+    thin = Side(style="thin", color="CCCCCC")
+    bdr  = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    col_count = len(headers)
+    last_col  = get_column_letter(col_count)
+
+    # Title row
+    ws.merge_cells(f"A1:{last_col}1")
+    c = ws["A1"]
+    c.value = title_text
+    c.font  = Font(name="Arial", bold=True, size=13, color=GOLD)
+    c.fill  = PatternFill("solid", fgColor=DARK)
+    c.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 28
+
+    # Header row
+    for ci, h in enumerate(headers, 1):
+        c = ws.cell(2, ci, h)
+        c.font  = Font(name="Arial", bold=True, size=11, color=WHITE)
+        c.fill  = PatternFill("solid", fgColor=DARK)
+        c.alignment = Alignment(horizontal="center")
+        c.border = bdr
+    ws.row_dimensions[2].height = 22
+
+    # Data rows
+    for i, row_data in enumerate(rows, 1):
+        r = i + 2
+        status = str(row_data[-1])
+        if "Applied" in status:    fc = GREEN
+        elif "External" in status: fc = YELLOW
+        elif "Skipped" in status:  fc = RED
+        else:                      fc = LIGHT if i % 2 == 0 else WHITE
+
+        for ci, val in enumerate(row_data, 1):
+            c = ws.cell(r, ci, val)
+            c.font   = Font(name="Arial", size=10)
+            c.fill   = PatternFill("solid", fgColor=fc)
+            c.border = bdr
+            c.alignment = Alignment(vertical="center", wrap_text=True,
+                                     horizontal="center" if ci in (1,) else "left")
+            # Hyperlink for link column
+            if isinstance(val, str) and val.startswith("http"):
+                c.hyperlink = val; c.value = "🔗 View"
+                c.font = Font(name="Arial", size=10, color="1155CC", underline="single")
+        ws.row_dimensions[r].height = 20
+
+    # Column widths
+    for ci, w in enumerate(col_widths, 1):
+        ws.column_dimensions[get_column_letter(ci)].width = w
+
+    ws.freeze_panes = "A3"
+    ws.auto_filter.ref = f"A2:{last_col}{len(rows)+2}"
+
+
+def save_naukri_excel(jobs, job_title, applied_count=0):
+    ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filepath = os.path.join(EXCEL_DIR, f"Naukri_{job_title.replace(' ','_')}_{ts}.xlsx")
+    wb = openpyxl.Workbook()
+    ws = wb.active; ws.title = "Naukri Jobs"
+
+    title_text = f"Naukri Jobs (24h) · {job_title.title()} · {datetime.now().strftime('%d %b %Y')} · Applied: {applied_count}"
+    headers    = ["#", "Job Title", "Company", "Exp", "Salary", "Location", "Posted", "Link", "Status"]
+    rows = []
+    for i, job in enumerate(jobs, 1):
+        rows.append([
+            i, job["title"], job["company"], job.get("exp","N/A"),
+            job["salary"], job["location"], job["posted"], job["link"],
+            job.get("applied","Pending"),
+        ])
+    col_widths = [4, 35, 22, 12, 18, 16, 12, 10, 18]
+    _excel_style(ws, title_text, headers, rows, col_widths)
+    wb.save(filepath)
+    print(f"\n💾 Naukri Excel → {filepath}")
+
+
+def save_linkedin_excel(jobs, job_title, applied_count=0):
+    ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filepath = os.path.join(EXCEL_DIR, f"LinkedIn_{job_title.replace(' ','_')}_{ts}.xlsx")
+    wb = openpyxl.Workbook()
+    ws = wb.active; ws.title = "LinkedIn Jobs"
+
+    title_text = f"LinkedIn Easy Apply · {job_title.title()} · {datetime.now().strftime('%d %b %Y')} · Applied: {applied_count}"
+    headers    = ["#", "Job Title", "Company", "Status", "Time"]
+    rows = []
+    for i, job in enumerate(jobs, 1):
+        rows.append([
+            i, job.get("title","N/A"), job.get("company","N/A"),
+            job.get("applied","Pending"), job.get("time",""),
+        ])
+    col_widths = [4, 40, 30, 22, 20]
+    _excel_style(ws, title_text, headers, rows, col_widths)
+    wb.save(filepath)
+    print(f"\n💾 LinkedIn Excel → {filepath}")
+
+# ══════════════════════════════════════════════════════════
+# EXECUTE COMMAND
+# ══════════════════════════════════════════════════════════
+
+def execute(parsed, browser, page):
+    intent    = parsed.get("intent", "unknown")
+    job_title = parsed.get("job_title", "Java Developer")
+    location  = parsed.get("location", "")
+    max_apply = int(parsed.get("max_apply", 5))
+
+    if intent == "naukri_auto_apply":
+        if input(f"\n⚠️  Apply to {max_apply} Naukri jobs? (yes/no): ").strip().lower() in ["yes","y"]:
+            naukri_auto_apply(browser, page, job_title, location, max_apply)
+        else:
+            print("Cancelled.")
+
+    elif intent == "naukri_search":
+        naukri_search_only(page, job_title, location)
+
+    elif intent == "linkedin_apply":
+        if input(f"\n⚠️  Apply to {max_apply} LinkedIn Easy Apply jobs? (yes/no): ").strip().lower() in ["yes","y"]:
+            linkedin_auto_apply(browser, page, job_title, location, max_apply)
+        else:
+            print("Cancelled.")
+
+    elif intent == "linkedin_search":
+        linkedin_search(page, job_title, location)
+
+    elif intent == "youtube_search":
+        q = parsed.get("query", job_title).replace(" ", "+")
+        safe_goto(page, f"https://www.youtube.com/results?search_query={q}")
+        print("✅ YouTube opened!")
+
+    elif intent == "google_search":
+        q = parsed.get("query", job_title).replace(" ", "+")
+        safe_goto(page, f"https://www.google.com/search?q={q}")
+        print("✅ Google opened!")
+
+    else:
+        print("\n⚠️  Could not understand your command.")
+        print("   Examples:")
+        print("   → auto apply java developer jobs on naukri")
+        print("   → apply to 3 spring boot jobs on naukri in hyderabad")
+        print("   → search python developer jobs on naukri")
+        print("   → apply to java jobs on linkedin")
+        print("   → find java developer jobs on linkedin")
+        print("   → open youtube and search lofi music")
+
+# ══════════════════════════════════════════════════════════
 # MAIN
-# ─────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════
+
 def main():
-    print("="*60)
-    print("  🤖 NAUKRI AGENT v4 — Smart Chatbot Handler")
-    print("="*60)
-    print(f"\n👤 {MY_PROFILE['name']} | {MY_PROFILE['current_role']} @ {MY_PROFILE['current_company']}")
-    print(f"🔧 Key fix: AI now answers chatbot questions like")
-    print(f"   'Did you work on any project?' → picks correct radio!\n")
+    print("=" * 60)
+    print("  🤖 AI PC AGENT — FINAL VERSION")
+    print("=" * 60)
+    print(f"\n  👤 {MY_PROFILE['name']}")
+    print(f"  💼 {MY_PROFILE['current_role']} @ {MY_PROFILE['current_company']}")
+    print(f"  📧 {MY_PROFILE['email']}  |  📱 {MY_PROFILE['phone']}")
+    print(f"\n  ✅ Naukri Auto Apply    ✅ LinkedIn Easy Apply")
+    print(f"  ✅ Human Q&A (no AI waits)  ✅ Excel Export")
+    print(f"  ✅ Tab management       ✅ External job detection\n")
 
     if not os.path.exists(MY_PROFILE["resume_path"]):
-        print(f"⚠️  Resume not found: {MY_PROFILE['resume_path']}\n")
+        print(f"  ⚠️  Resume not found: {MY_PROFILE['resume_path']}")
+        print(f"     Please update resume_path in MY_PROFILE!\n")
 
     with sync_playwright() as p:
         print("🚀 Opening browser...")
-        browser=p.chromium.launch_persistent_context(
-            user_data_dir=AGENT_PROFILE,channel="chrome",headless=False,slow_mo=100,
-            args=["--start-maximized","--disable-blink-features=AutomationControlled"],
-            no_viewport=True,ignore_default_args=["--enable-automation"],
+        browser = p.chromium.launch_persistent_context(
+            user_data_dir=AGENT_PROFILE,
+            channel="chrome",
+            headless=False,
+            slow_mo=80,
+            args=["--start-maximized", "--disable-blink-features=AutomationControlled"],
+            no_viewport=True,
+            ignore_default_args=["--enable-automation"],
         )
-        page=browser.new_page()
+        page = browser.new_page()
         page.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
-        print("✅ Ready!\n")
-        print("Commands:")
-        print("  - auto apply java developer jobs on naukri")
-        print("  - apply to 3 spring boot jobs on naukri")
-        print("  - search java jobs on naukri\n")
+        print("✅ Browser ready!\n")
+
+        print("─" * 60)
+        print("  COMMANDS YOU CAN SAY:")
+        print("  • auto apply java developer jobs on naukri")
+        print("  • apply to 3 spring boot jobs on naukri in hyderabad")
+        print("  • search java jobs on naukri")
+        print("  • apply to java jobs on linkedin")
+        print("  • find python developer jobs on linkedin")
+        print("  • open youtube and search lofi music")
+        print("  • google weather in hyderabad")
+        print("─" * 60 + "\n")
 
         while True:
-            command=input("🎤 Command (or 'quit'): ").strip()
-            if command.lower() in ["quit","exit","q"]:
-                print("👋 Goodbye!"); browser.close(); break
-            if not command: continue
-            ai_result=ask_ai(command)
-            if ai_result.get("intent")=="unknown":
-                print("❌ Could not understand."); continue
-            try: execute(ai_result,page)
-            except Exception as e: print(f"❌ Error: {e}")
-            print("\n"+"-"*60+"\n✅ Ready!\n"+"-"*60+"\n")
+            try:
+                command = input("🎤 Command (or 'quit'): ").strip()
+            except KeyboardInterrupt:
+                print("\n👋 Goodbye!")
+                browser.close()
+                break
 
-if __name__=="__main__":
+            if command.lower() in ["quit", "exit", "q", "bye"]:
+                print("👋 Goodbye!")
+                browser.close()
+                break
+            if not command:
+                continue
+
+            parsed = parse_command(command)
+            print(f"⚡ → intent: {parsed['intent']}  |  job: '{parsed.get('job_title','')}'"
+                  f"  |  loc: '{parsed.get('location','')}'  |  max: {parsed.get('max_apply',5)}")
+
+            try:
+                execute(parsed, browser, page)
+            except Exception as e:
+                print(f"\n❌ Error: {e}")
+                close_extra_tabs(browser, page)
+
+            print("\n" + "─" * 60 + "\n✅ Ready for next command!\n" + "─" * 60 + "\n")
+
+
+if __name__ == "__main__":
     main()
